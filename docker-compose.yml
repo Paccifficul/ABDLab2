@@ -1,0 +1,115 @@
+﻿services:
+  postgres:
+    image: postgres:17
+    container_name: abdlab2-postgres
+    command: ["postgres", "-p", "5555"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: abd_lab2
+    ports:
+      - "5555:5555"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./исходные данные:/csv:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d abd_lab2 -p 5555"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - abdlab2-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: abdlab2-clickhouse
+    environment:
+      CLICKHOUSE_DB: reports
+      CLICKHOUSE_USER: student
+      CLICKHOUSE_PASSWORD: student
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - abdlab2-net
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: abdlab2-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: abdlab2-cluster
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks:
+      - abdlab2-net
+
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: abdlab2-cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cassandra/init.cql:/init.cql:ro
+    command: ["bash", "-lc", "/opt/cassandra/bin/cqlsh cassandra 9042 -f /init.cql"]
+    networks:
+      - abdlab2-net
+    restart: "no"
+
+  spark-etl:
+    build:
+      context: ./src/ABDLab2.Etl
+      dockerfile: Dockerfile
+    container_name: abdlab2-spark-etl
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5555
+      POSTGRES_DB: abd_lab2
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      CLICKHOUSE_HTTP_URL: http://clickhouse:8123/?database=reports&user=student&password=student
+      CLICKHOUSE_JDBC_URL: jdbc:clickhouse://clickhouse:8123/reports
+      CLICKHOUSE_USER: student
+      CLICKHOUSE_PASSWORD: student
+      CASSANDRA_HOST: cassandra
+      CASSANDRA_PORT: 9042
+      CASSANDRA_KEYSPACE: reports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      cassandra-init:
+        condition: service_completed_successfully
+    networks:
+      - abdlab2-net
+    restart: "no"
+
+networks:
+  abdlab2-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  clickhouse_data:
+  cassandra_data:
+
